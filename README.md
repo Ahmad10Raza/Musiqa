@@ -1,9 +1,7 @@
 # Musiqa 🎵
 
 <p align="center">
-  <img src="screenshots/00_splash_screen.png" width="280" alt="Musiqa Splash Animation" />
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="screenshots/01_online_home.png" width="280" alt="Musiqa Online Home" />
+  <img src="screenshots/00_splash_screen.png" width="300" alt="Musiqa App" />
 </p>
 
 <p align="center">
