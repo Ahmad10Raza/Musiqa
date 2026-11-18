@@ -1,7 +1,9 @@
 # Musiqa 🎵
 
 <p align="center">
-  <img src="screenshots/01_online_home.png" width="300" alt="Musiqa App" />
+  <img src="screenshots/00_splash_screen.png" width="280" alt="Musiqa Splash Animation" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/01_online_home.png" width="280" alt="Musiqa Online Home" />
 </p>
 
 <p align="center">
@@ -54,21 +56,15 @@ Whether playing high-fidelity offline FLAC/MP3 files from device storage or stre
 
 ## 📸 Screenshots & Visual Walkthrough
 
-| 1. Online Home | 2. Interactive Search & Suggestions | 3. Query Refinement (`↖`) |
-|:---:|:---:|:---:|
-| <img src="screenshots/01_online_home.png" width="260" /> | <img src="screenshots/02_interactive_search.png" width="260" /> | <img src="screenshots/03_query_refinement.png" width="260" /> |
-| Discover trending shelves & moods | Debounced queries with interleaved song cards | Tap `↖` to refine queries without searching |
+| 1. Animated Splash Screen | 2. Online Catalogue Home | 3. Interactive Search | 4. Query Refinement (`↖`) |
+|:---:|:---:|:---:|:---:|
+| <img src="screenshots/00_splash_screen.png" width="220" /> | <img src="screenshots/01_online_home.png" width="220" /> | <img src="screenshots/02_interactive_search.png" width="220" /> | <img src="screenshots/03_query_refinement.png" width="220" /> |
+| Concentric red vinyl glow & audio waves | Trending shelves & mood categories | Debounced queries & interleaved cards | Tap `↖` to refine queries iteratively |
 
-| 4. Committed Search Results | 5. Direct Song Card Playback | 6. Vinyl Now Playing Player |
-|:---:|:---:|:---:|
-| <img src="screenshots/04_committed_search.png" width="260" /> | <img src="screenshots/05_direct_song_playing.png" width="260" /> | <img src="screenshots/06_vinyl_now_playing.png" width="260" /> |
-| Multi-signal authority ranked songs | Instant streaming from suggestion card | Rotating vinyl, bitrate badge & controls |
-
-<p align="center">
-  <b>7. Offline Local Library ("My Music")</b><br/>
-  <img src="screenshots/07_local_library.png" width="300" alt="Local Music Library" /><br/>
-  <i>Full local MediaStore scanner with Quick Filters (Favorites, Recent, Scan Music, Folders)</i>
-</p>
+| 5. Committed Search Results | 6. Direct Card Playback | 7. Vinyl Now Playing Player | 8. Local Library ("My Music") |
+|:---:|:---:|:---:|:---:|
+| <img src="screenshots/04_committed_search.png" width="220" /> | <img src="screenshots/05_direct_song_playing.png" width="220" /> | <img src="screenshots/06_vinyl_now_playing.png" width="220" /> | <img src="screenshots/07_local_library.png" width="220" /> |
+| Authority ranked songs & view counts | Instant streaming from suggestion card | Rotating vinyl, bitrate badge & lyrics | MediaStore scanner & offline filters |
 
 ---
 

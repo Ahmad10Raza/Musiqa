@@ -64,14 +64,14 @@ fun SplashScreen(
     )
 
     // Fade-in entry animation
-    var startAnim by remember { mutableStateOf(false) }
+    var startAnim by remember { mutableStateOf(true) }
     val entryAlpha by animateFloatAsState(
-        targetValue = if (startAnim) 1f else 0f,
+        targetValue = 1f,
         animationSpec = tween(600, easing = EaseOutQuad),
         label = "entry_alpha"
     )
     val entryScale by animateFloatAsState(
-        targetValue = if (startAnim) 1f else 0.8f,
+        targetValue = 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy),
         label = "entry_scale"
     )
