@@ -71,7 +71,7 @@ Whether playing high-fidelity offline FLAC/MP3 files from device storage or stre
 ### Option 1: Direct APK Download (Recommended)
 Download the latest signed release APK directly from GitHub Releases:
 
-👉 **[Download Musiqa v1.0.0 APK](https://github.com/Ahmad10Raza/Musiqa/releases/download/v1.0.0/Musiqa-v1.0.0.apk)**
+👉 **[Download Musiqa v1.1.0 APK](https://github.com/Ahmad10Raza/Musiqa/releases/download/v1.1.0/Musiqa-v1.1.0.apk)** • [View Changelog](CHANGELOG.md)
 
 1. Transfer or download the APK to your Android device (Android 8.0+ / API 26+).
 2. Tap the downloaded APK to install (enable *"Install unknown apps"* if prompted).
