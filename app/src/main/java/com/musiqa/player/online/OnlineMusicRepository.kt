@@ -9,17 +9,30 @@ package com.musiqa.player.online
  */
 interface OnlineMusicRepository {
     suspend fun home(
-        languages: Set<String> = setOf("Hindi"),
+        languages: Set<String> = setOf("English", "Hindi"),
         artists: Set<String> = emptySet(),
         genres: Set<String> = emptySet(),
         speedDialIds: List<String> = emptyList(),
-        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord> = emptyList()
+        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord> = emptyList(),
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord> = emptyList(),
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity> = emptyMap()
     ): List<OnlineShelf>
     suspend fun search(query: String): List<OnlineTrack>
-    suspend fun categoryTracks(category: String): List<OnlineTrack>
+    suspend fun categoryTracks(
+        category: String,
+        languages: Set<String> = setOf("English", "Hindi"),
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord> = emptyList(),
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity> = emptyMap()
+    ): List<OnlineTrack>
     suspend fun collection(id: String): OnlineCollection?
     suspend fun resolveStreamUrl(trackId: String): String?
-    suspend fun getRadioQueue(seedTrack: OnlineTrack): List<OnlineTrack>
+    suspend fun getRadioQueue(
+        seedTrack: OnlineTrack,
+        languages: Set<String> = setOf("English", "Hindi"),
+        preferredArtists: Set<String> = emptySet(),
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord> = emptyList(),
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity> = emptyMap()
+    ): List<OnlineTrack>
     suspend fun getSearchSuggestions(query: String): List<SearchSuggestionItem>
     suspend fun getHeroRadio(
         recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>,
@@ -59,7 +72,8 @@ data class OnlineTrack(
     val artworkSeed: Int = 0,
     val artworkUrl: String? = null,
     val streamUrl: String? = null,
-    val playsCount: String? = null
+    val playsCount: String? = null,
+    val reason: String? = null
 )
 
 data class OnlineCollection(
@@ -91,14 +105,16 @@ class YouTubeMusicRepositoryImpl : OnlineMusicRepository {
         artists: Set<String>,
         genres: Set<String>,
         speedDialIds: List<String>,
-        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>
+        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
     ): List<OnlineShelf> {
-        val realShelves = YouTubeMusicEngine.home(languages, artists, genres, speedDialIds, recentRecords)
+        val realShelves = YouTubeMusicEngine.home(languages, artists, genres, speedDialIds, recentRecords, playEvents, artistScores)
         return if (realShelves.isNotEmpty()) {
             cachedShelves = realShelves
             realShelves
         } else {
-            if (cachedShelves.isNotEmpty()) cachedShelves else demoFallback.home(languages, artists, genres, speedDialIds, recentRecords)
+            if (cachedShelves.isNotEmpty()) cachedShelves else demoFallback.home(languages, artists, genres, speedDialIds, recentRecords, playEvents, artistScores)
         }
     }
 
@@ -108,22 +124,37 @@ class YouTubeMusicRepositoryImpl : OnlineMusicRepository {
         return if (results.isNotEmpty()) results else demoFallback.search(query)
     }
 
-    override suspend fun categoryTracks(category: String): List<OnlineTrack> {
-        val results = YouTubeMusicEngine.fetchCategoryTracks(category)
-        return if (results.isNotEmpty()) results else demoFallback.categoryTracks(category)
+    override suspend fun categoryTracks(
+        category: String,
+        languages: Set<String>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
+    ): List<OnlineTrack> {
+        val results = YouTubeMusicEngine.fetchCategoryTracks(category, languages, playEvents, artistScores)
+        return if (results.isNotEmpty()) results else demoFallback.categoryTracks(category, languages, playEvents, artistScores)
     }
 
     override suspend fun collection(id: String): OnlineCollection? {
+        if (id == "explore-releases" || id == "explore-podcasts" || id == "explore-charts") {
+            val dynamicCol = YouTubeMusicEngine.fetchExploreCollection(id)
+            if (dynamicCol != null && dynamicCol.tracks.isNotEmpty()) return dynamicCol
+        }
         val allCollections = cachedShelves.flatMap { it.collections }
-        return allCollections.find { it.id == id } ?: demoFallback.collection(id)
+        return allCollections.find { it.id == id && it.tracks.isNotEmpty() } ?: demoFallback.collection(id)
     }
 
     override suspend fun resolveStreamUrl(trackId: String): String? {
         return YouTubeMusicEngine.resolveStreamUrl(trackId)
     }
 
-    override suspend fun getRadioQueue(seedTrack: OnlineTrack): List<OnlineTrack> {
-        return YouTubeMusicEngine.generateRadioQueue(seedTrack)
+    override suspend fun getRadioQueue(
+        seedTrack: OnlineTrack,
+        languages: Set<String>,
+        preferredArtists: Set<String>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
+    ): List<OnlineTrack> {
+        return YouTubeMusicEngine.generateRadioQueue(seedTrack, languages, preferredArtists, playEvents, artistScores)
     }
 
     override suspend fun getSearchSuggestions(query: String): List<SearchSuggestionItem> {
@@ -176,7 +207,9 @@ class DemoOnlineMusicRepository : OnlineMusicRepository {
         artists: Set<String>,
         genres: Set<String>,
         speedDialIds: List<String>,
-        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>
+        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
     ): List<OnlineShelf> = listOf(
         OnlineShelf("made-for-you", "Made for you", "A fresh starting point", collections.take(3)),
         OnlineShelf("mood", "Mood & moment", "Choose how you want to feel", collections.drop(3)),
@@ -190,7 +223,12 @@ class DemoOnlineMusicRepository : OnlineMusicRepository {
         }
     }
 
-    override suspend fun categoryTracks(category: String): List<OnlineTrack> {
+    override suspend fun categoryTracks(
+        category: String,
+        languages: Set<String>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
+    ): List<OnlineTrack> {
         val all = collections.flatMap { it.tracks }
         return search(category).ifEmpty { all }
     }
@@ -199,7 +237,13 @@ class DemoOnlineMusicRepository : OnlineMusicRepository {
 
     override suspend fun resolveStreamUrl(trackId: String): String? = null
 
-    override suspend fun getRadioQueue(seedTrack: OnlineTrack): List<OnlineTrack> {
+    override suspend fun getRadioQueue(
+        seedTrack: OnlineTrack,
+        languages: Set<String>,
+        preferredArtists: Set<String>,
+        playEvents: List<com.musiqa.player.data.repository.PlayEventRecord>,
+        artistScores: Map<String, com.musiqa.player.data.repository.ArtistAffinity>
+    ): List<OnlineTrack> {
         return collections.flatMap { it.tracks }.distinctBy { it.id }.take(20)
     }
 

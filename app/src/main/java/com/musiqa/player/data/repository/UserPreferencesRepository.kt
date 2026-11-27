@@ -101,7 +101,7 @@ class UserPreferencesRepository(context: Context) {
 
     fun getPreferredLanguages(): Set<String> {
         val langs = prefs.getStringSet("preferred_languages", null)
-        return langs ?: setOf("Hindi")
+        return langs ?: setOf("English", "Hindi")
     }
 
     fun setPreferredLanguages(languages: Set<String>) {
@@ -110,7 +110,7 @@ class UserPreferencesRepository(context: Context) {
 
     fun getPreferredGenres(): Set<String> {
         val genres = prefs.getStringSet("preferred_genres", null)
-        return genres ?: setOf("Bollywood", "Sufi & Ghazal", "Romantic")
+        return genres ?: setOf("Pop", "Bollywood", "Lo-Fi & Chill")
     }
 
     fun setPreferredGenres(genres: Set<String>) {
@@ -119,7 +119,7 @@ class UserPreferencesRepository(context: Context) {
 
     fun getPreferredArtists(): Set<String> {
         val artists = prefs.getStringSet("preferred_artists", null)
-        return artists ?: setOf("Arijit Singh", "Nusrat Fateh Ali Khan", "KK", "Atif Aslam")
+        return artists ?: emptySet()
     }
 
     fun setPreferredArtists(artists: Set<String>) {
@@ -257,6 +257,184 @@ class UserPreferencesRepository(context: Context) {
         }
         return list
     }
+
+    // --- Self-Learning Recommendation Telemetry ---
+
+    fun normalizeArtistKey(artist: String): String {
+        val primary = artist.split(",", "&", "feat.", "ft.", " x ", " X ").firstOrNull()?.trim() ?: artist
+        return primary.lowercase().replace(Regex("[^a-z0-9\\s]"), "").trim().replace(Regex("\\s+"), "_")
+    }
+
+    fun recordPlaybackOutcome(
+        trackId: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkUrl: String?,
+        completionRatio: Float,
+        source: String,
+        moodTag: String = "",
+        isInitialStart: Boolean = false
+    ) {
+        try {
+            val ratio = completionRatio.coerceIn(0f, 1f)
+            val isLiked = !isInitialStart && ratio >= 0.80f
+            val isSkipped = !isInitialStart && ratio < 0.25f
+
+            // 1. Update PlayEvent log (up to 150 events). If updating the active top event for the same trackId, replace it in-place to avoid double counting.
+            val eventObj = org.json.JSONObject().apply {
+                put("id", trackId)
+                put("title", title)
+                put("artist", artist)
+                put("album", album)
+                put("artworkUrl", artworkUrl ?: "")
+                put("timestamp", System.currentTimeMillis())
+                put("completion", ratio.toDouble())
+                put("liked", isLiked)
+                put("skipped", isSkipped)
+                put("source", source)
+                put("mood", moodTag)
+            }
+            val currentEventsJson = prefs.getString("play_events_json", "[]") ?: "[]"
+            val existing = try { org.json.JSONArray(currentEventsJson) } catch (_: Exception) { org.json.JSONArray() }
+            val updated = org.json.JSONArray()
+            updated.put(eventObj)
+            val firstExisting = existing.optJSONObject(0)
+            val skipFirst = !isInitialStart && firstExisting != null && firstExisting.optString("id") == trackId
+            val startIdx = if (skipFirst) 1 else 0
+            for (i in startIdx until minOf(existing.length(), 149)) {
+                val item = existing.optJSONObject(i) ?: continue
+                updated.put(item)
+            }
+            prefs.edit().putString("play_events_json", updated.toString()).apply()
+
+            // 2. Update ArtistAffinity scores (music-recommender algorithm)
+            val artistKey = normalizeArtistKey(artist)
+            if (artistKey.isNotBlank() && artistKey != "unknown" && artistKey != "various_artists") {
+                val scoresJson = prefs.getString("artist_affinity_json", "{}") ?: "{}"
+                val scoresObj = try { org.json.JSONObject(scoresJson) } catch (_: Exception) { org.json.JSONObject() }
+                val entry = scoresObj.optJSONObject(artistKey) ?: org.json.JSONObject()
+                var likes = entry.optDouble("likes", 0.0)
+                var skips = entry.optDouble("skips", 0.0)
+
+                if (isInitialStart) {
+                    if (source == "search" || source == "searched") {
+                        likes += 0.5 // Search intent is a strong taste signal
+                    }
+                } else {
+                    when {
+                        isLiked -> likes += 1.0
+                        (source == "search" || source == "searched") && ratio >= 0.10f -> likes += 0.5
+                        isSkipped -> {
+                            skips += if (source == "search" || source == "searched") 0.3 else 1.0
+                        }
+                    }
+                }
+
+                entry.put("name", artist.split(",", "&", "feat.", "ft.").firstOrNull()?.trim() ?: artist)
+                entry.put("likes", likes)
+                entry.put("skips", skips)
+                entry.put("lastPlayed", System.currentTimeMillis())
+                scoresObj.put(artistKey, entry)
+                prefs.edit().putString("artist_affinity_json", scoresObj.toString()).apply()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("UserPrefs", "Failed to record playback outcome: ${e.message}")
+        }
+    }
+
+    fun getArtistScores(): Map<String, ArtistAffinity> {
+        val scoresJson = prefs.getString("artist_affinity_json", "{}") ?: "{}"
+        val result = mutableMapOf<String, ArtistAffinity>()
+        try {
+            val obj = org.json.JSONObject(scoresJson)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val entry = obj.optJSONObject(k) ?: continue
+                result[k] = ArtistAffinity(
+                    artistKey = k,
+                    displayName = entry.optString("name", k),
+                    likes = entry.optDouble("likes", 0.0).toFloat(),
+                    skips = entry.optDouble("skips", 0.0).toFloat(),
+                    lastPlayedMs = entry.optLong("lastPlayed", 0L)
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return result
+    }
+
+    fun getPlayEvents(limit: Int = 100): List<PlayEventRecord> {
+        val currentJson = prefs.getString("play_events_json", "[]") ?: "[]"
+        val list = mutableListOf<PlayEventRecord>()
+        try {
+            val array = org.json.JSONArray(currentJson)
+            for (i in 0 until minOf(array.length(), limit)) {
+                val item = array.optJSONObject(i) ?: continue
+                list.add(
+                    PlayEventRecord(
+                        trackId = item.optString("id"),
+                        title = item.optString("title"),
+                        artist = item.optString("artist"),
+                        album = item.optString("album"),
+                        artworkUrl = item.optString("artworkUrl").takeIf { it.isNotBlank() },
+                        timestamp = item.optLong("timestamp"),
+                        completionRatio = item.optDouble("completion", 0.0).toFloat(),
+                        liked = item.optBoolean("liked", false),
+                        skipped = item.optBoolean("skipped", false),
+                        source = item.optString("source", "home"),
+                        moodTag = item.optString("mood", "")
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return list
+    }
+
+    // --- Search History ---
+
+    fun getSearchHistory(): List<String> {
+        val raw = prefs.getString("online_search_history_json", "[]") ?: "[]"
+        val list = mutableListOf<String>()
+        try {
+            val arr = org.json.JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val q = arr.optString(i).trim()
+                if (q.isNotBlank()) list.add(q)
+            }
+        } catch (_: Exception) {
+        }
+        return list
+    }
+
+    fun addSearchHistory(query: String) {
+        val clean = query.trim()
+        if (clean.isBlank()) return
+        val current = getSearchHistory().filterNot { it.equals(clean, ignoreCase = true) }.toMutableList()
+        current.add(0, clean)
+        val arr = org.json.JSONArray()
+        current.take(15).forEach { arr.put(it) }
+        prefs.edit().putString("online_search_history_json", arr.toString()).apply()
+    }
+
+    fun removeSearchHistory(query: String) {
+        val current = getSearchHistory().filterNot { it.equals(query, ignoreCase = true) }
+        val arr = org.json.JSONArray()
+        current.forEach { arr.put(it) }
+        prefs.edit().putString("online_search_history_json", arr.toString()).apply()
+    }
+
+    fun clearSearchHistory() {
+        prefs.edit().putString("online_search_history_json", "[]").apply()
+    }
+
+    // Last Active Bottom Tab ("MY_MUSIC" or "ONLINE")
+    fun getLastBottomTab(): String = prefs.getString("last_bottom_tab", "MY_MUSIC") ?: "MY_MUSIC"
+    fun setLastBottomTab(tab: String) {
+        prefs.edit().putString("last_bottom_tab", tab).apply()
+    }
 }
 
 data class ListeningRecord(
@@ -266,5 +444,27 @@ data class ListeningRecord(
     val album: String,
     val artworkUrl: String?,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+data class ArtistAffinity(
+    val artistKey: String,
+    val displayName: String,
+    val likes: Float,
+    val skips: Float,
+    val lastPlayedMs: Long
+)
+
+data class PlayEventRecord(
+    val trackId: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val artworkUrl: String?,
+    val timestamp: Long,
+    val completionRatio: Float,
+    val liked: Boolean,
+    val skipped: Boolean,
+    val source: String,
+    val moodTag: String
 )
 

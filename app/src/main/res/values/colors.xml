@@ -1,4 +1,5 @@
 <resources>
     <color name="primary_red">#FFE32E27</color>
+    <color name="blood_red">#FF8B0000</color>
     <color name="primary_dark">#FF121212</color>
 </resources>

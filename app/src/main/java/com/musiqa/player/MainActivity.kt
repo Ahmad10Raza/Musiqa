@@ -170,9 +170,19 @@ fun MainContent(
     onRequestPermission: () -> Unit,
     onRescan: () -> Unit
 ) {
-    var selectedBottomTab by remember { mutableStateOf(BottomTab.MY_MUSIC) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val userPrefs = remember { com.musiqa.player.data.repository.UserPreferencesRepository(context) }
+    var selectedBottomTab by remember {
+        mutableStateOf(
+            if (userPrefs.getLastBottomTab() == BottomTab.ONLINE.name) BottomTab.ONLINE else BottomTab.MY_MUSIC
+        )
+    }
     var currentSubScreen by remember { mutableStateOf(SubScreen.MAIN) }
     var isNowPlayingExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        PlayerController.onTabSelected(isMyMusicTab = selectedBottomTab == BottomTab.MY_MUSIC)
+    }
 
     if (!hasPermission) {
         Box(
@@ -265,6 +275,7 @@ fun MainContent(
                                 modifier = Modifier
                                     .clickable {
                                         selectedBottomTab = BottomTab.MY_MUSIC
+                                        userPrefs.setLastBottomTab(BottomTab.MY_MUSIC.name)
                                         PlayerController.onTabSelected(isMyMusicTab = true)
                                     }
                                     .padding(horizontal = 24.dp, vertical = 6.dp)
@@ -291,6 +302,7 @@ fun MainContent(
                                 modifier = Modifier
                                     .clickable {
                                         selectedBottomTab = BottomTab.ONLINE
+                                        userPrefs.setLastBottomTab(BottomTab.ONLINE.name)
                                         PlayerController.onTabSelected(isMyMusicTab = false)
                                     }
                                     .padding(horizontal = 24.dp, vertical = 6.dp)

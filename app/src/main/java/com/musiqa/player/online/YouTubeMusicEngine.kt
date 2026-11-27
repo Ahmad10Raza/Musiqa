@@ -1,7 +1,12 @@
 package com.musiqa.player.online
 
 import android.util.Log
+import com.musiqa.player.data.repository.ArtistAffinity
+import com.musiqa.player.data.repository.PlayEventRecord
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -36,109 +41,122 @@ object YouTubeMusicEngine {
     }
 
     suspend fun home(
-        languages: Set<String> = setOf("Hindi"),
+        languages: Set<String> = setOf("English", "Hindi"),
         artists: Set<String> = emptySet(),
         genres: Set<String> = emptySet(),
         speedDialIds: List<String> = emptyList(),
-        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord> = emptyList()
+        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord> = emptyList(),
+        playEvents: List<PlayEventRecord> = emptyList(),
+        artistScores: Map<String, ArtistAffinity> = emptyMap()
     ): List<OnlineShelf> = withContext(Dispatchers.IO) {
-        val isIndian = languages.isEmpty() || languages.any {
-            it.equals("Hindi", true) || it.equals("Punjabi", true) || it.equals("Urdu", true) ||
-            it.equals("Tamil", true) || it.equals("Telugu", true) || it.equals("Bhojpuri", true)
+        val isIndian = languages.any {
+            it.contains("Hindi", true) || it.contains("Punjabi", true) || it.contains("Urdu", true) ||
+            it.contains("Tamil", true) || it.contains("Telugu", true) || it.contains("Bengali", true) ||
+            it.contains("India", true) || it.contains("Marathi", true) || it.contains("Gujarati", true)
         }
-        val gl = if (isIndian) "IN" else "US"
+        val gl = if (isIndian || languages.isEmpty()) "IN" else "US"
         val hl = if (isIndian) "en-GB" else "en"
 
         try {
-            val url = "https://music.youtube.com/youtubei/v1/browse"
-            val bodyJson = JSONObject().apply {
-                put("context", JSONObject().apply {
-                    put("client", JSONObject().apply {
-                        put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20240101.01.00")
-                        put("hl", hl)
-                        put("gl", gl)
-                    })
-                })
-                put("browseId", "FEmusic_home")
+            val (parsedShelves, dynamicShelves) = coroutineScope {
+                val homeJob = async {
+                    val url = "https://music.youtube.com/youtubei/v1/browse"
+                    val bodyJson = JSONObject().apply {
+                        put("context", JSONObject().apply {
+                            put("client", JSONObject().apply {
+                                put("clientName", "WEB_REMIX")
+                                put("clientVersion", "1.20240101.01.00")
+                                put("hl", hl)
+                                put("gl", gl)
+                            })
+                        })
+                        put("browseId", "FEmusic_home")
+                    }
+
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .addHeader("Referer", "https://music.youtube.com/")
+                        .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+
+                    val response = client.newCall(request).execute()
+                    val responseString = response.body?.string()
+                    if (responseString != null) parseHomeShelves(responseString).toMutableList() else mutableListOf()
+                }
+
+                val dynamicJob = async {
+                    buildDynamicLearnedShelves(languages, artists, genres, recentRecords, playEvents, artistScores)
+                }
+
+                homeJob.await() to dynamicJob.await()
             }
 
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Content-Type", "application/json")
-                .addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .addHeader("Referer", "https://music.youtube.com/")
-                .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val response = client.newCall(request).execute()
-            val responseString = response.body?.string() ?: return@withContext buildPersonalizedFallbackShelves(languages, artists, genres, recentRecords)
-            val parsedShelves = parseHomeShelves(responseString).toMutableList()
-
             val richFallback = buildPersonalizedFallbackShelves(languages, artists, genres, recentRecords)
-            val allLiveTracks = parsedShelves.flatMap { it.tracks }
+            val allLiveTracks = (dynamicShelves.flatMap { it.tracks } + parsedShelves.flatMap { it.tracks }).distinctBy { it.id }
             val mergedShelves = mutableListOf<OnlineShelf>()
 
-            // 1. Speed Dial
+            // 1. Speed Dial (prioritize recent listening + dynamic learned tracks)
             val rawSpeedDial = parsedShelves.find { it.shelfType == ShelfType.SPEED_DIAL_GRID }
             val speedDial = if (rawSpeedDial != null) {
                 val recentTracks = recentRecords.map {
                     OnlineTrack(it.trackId, it.title, it.artist, it.album, "", artworkUrl = it.artworkUrl)
                 }
-                rawSpeedDial.copy(tracks = (recentTracks + rawSpeedDial.tracks).distinctBy { it.id }.take(27))
+                rawSpeedDial.copy(tracks = (recentTracks + allLiveTracks + rawSpeedDial.tracks).distinctBy { it.id }.take(27))
             } else {
                 buildSpeedDialShelf(languages, artists, allLiveTracks, recentRecords)
             }
             mergedShelves.add(speedDial)
 
-            // 2. Quick Picks
-            val quickPicks = parsedShelves.find { it.title.contains("Quick picks", ignoreCase = true) }
-                ?: richFallback.find { it.id == "quick-picks" }
+            // 2. Quick Picks (prefer live or dynamic tracks over static fallback)
+            val quickPicks = parsedShelves.find { it.title.contains("Quick picks", ignoreCase = true) && it.tracks.size >= 4 }
+                ?: if (allLiveTracks.size >= 8) {
+                    OnlineShelf(
+                        id = "quick-picks",
+                        title = "Quick picks",
+                        subtitle = "Tailored to your taste",
+                        tracks = allLiveTracks.shuffled().take(16),
+                        shelfType = ShelfType.TRACK_LIST
+                    )
+                } else {
+                    richFallback.find { it.id == "quick-picks" }
+                }
             if (quickPicks != null) mergedShelves.add(quickPicks)
 
-            // 3. Mixed For You / Daily Discovery
-            val mixedForYou = parsedShelves.find { it.title.contains("Mixed for you", ignoreCase = true) }
-                ?: richFallback.find { it.id == "daily-discovery" }
-            if (mixedForYou != null) mergedShelves.add(mixedForYou)
+            // 3. Learned / Preference Shelves
+            val learnedShelves = dynamicShelves.filter { it.id != "song-mixer" }
+            mergedShelves.addAll(learnedShelves)
 
-            // 4. Covers and remixes
-            val covers = parsedShelves.find { it.title.contains("Cover", ignoreCase = true) || it.title.contains("Remix", ignoreCase = true) }
-                ?: richFallback.find { it.id == "covers-remixes" }
-            if (covers != null) mergedShelves.add(covers)
+            // 4. Song Mixes (placed in the middle of the feed, blending user taste + all genres/moods)
+            val songMixer = dynamicShelves.find { it.id == "song-mixer" }
+            if (songMixer != null && songMixer.tracks.size >= 4) {
+                mergedShelves.add(songMixer)
+            }
 
-            // 5. Forgotten favourites
-            val forgotten = parsedShelves.find { it.title.contains("Forgotten", ignoreCase = true) }
-                ?: richFallback.find { it.id == "forgotten-favourites" }
-            if (forgotten != null) mergedShelves.add(forgotten)
-
-            // 6. Live performances
-            val live = parsedShelves.find { it.title.contains("Live", ignoreCase = true) || it.title.contains("Performance", ignoreCase = true) }
-                ?: richFallback.find { it.id == "live-performances" }
-            if (live != null) mergedShelves.add(live)
-
-            // 7. Trending songs for you
-            val trending = parsedShelves.find { it.title.contains("Trending", ignoreCase = true) }
-                ?: richFallback.find { it.id == "trending-for-you" }
-            if (trending != null) mergedShelves.add(trending)
-
-            // 8. Long listens
-            val longListens = parsedShelves.find { it.title.contains("Long", ignoreCase = true) }
-                ?: richFallback.find { it.id == "long-listens" }
-            if (longListens != null) mergedShelves.add(longListens)
-
-            // 9. Bollywood & Punjabi Hits
-            val regional = parsedShelves.find { it.title.contains("Bollywood", ignoreCase = true) || it.title.contains("Punjabi", ignoreCase = true) }
-                ?: richFallback.find { it.id == "bollywood-punjabi" }
-            if (regional != null) mergedShelves.add(regional)
-
-            // Add any other shelves from parsedShelves that were not included
+            // 5. Add remaining valid parsed live shelves from YouTube Music (never 1-card/1-song or duplicate mix shelves)
             for (s in parsedShelves) {
-                if (mergedShelves.none { it.title.equals(s.title, ignoreCase = true) || it.id == s.id }) {
-                    mergedShelves.add(s)
+                val isMixShelf = s.title.contains("mix", ignoreCase = true)
+                val normalizedShelf = if (s.shelfType == ShelfType.COLLECTION_ROW && s.collections.size <= 1 && s.tracks.size >= 3) {
+                    s.copy(shelfType = ShelfType.TRACK_LIST)
+                } else {
+                    s
+                }
+                val hasEnoughContent = when (normalizedShelf.shelfType) {
+                    ShelfType.COLLECTION_ROW -> normalizedShelf.collections.size >= 2
+                    ShelfType.TRACK_LIST, ShelfType.FEATURED_WIDE -> normalizedShelf.tracks.size >= 3
+                    else -> true
+                }
+                if (hasEnoughContent &&
+                    !isMixShelf &&
+                    normalizedShelf.shelfType != ShelfType.SPEED_DIAL_GRID &&
+                    mergedShelves.none { it.title.equals(normalizedShelf.title, ignoreCase = true) || it.id == normalizedShelf.id }
+                ) {
+                    mergedShelves.add(normalizedShelf)
                 }
             }
 
-            // 10. Explore Grid
+            // 5. Explore Grid
             if (mergedShelves.none { it.shelfType == ShelfType.EXPLORE_GRID }) {
                 mergedShelves.add(buildExploreShelf())
             }
@@ -148,6 +166,119 @@ object YouTubeMusicEngine {
             Log.e(TAG, "Failed to fetch home shelves: ${e.message}", e)
             buildPersonalizedFallbackShelves(languages, artists, genres, recentRecords)
         }
+    }
+
+    /**
+     * Builds live, non-static personalized shelves from the user's learned listening history,
+     * preferred artists/genres, and a contrast discovery query (preventing mood fatigue).
+     */
+    private suspend fun buildDynamicLearnedShelves(
+        languages: Set<String>,
+        artists: Set<String>,
+        genres: Set<String>,
+        recentRecords: List<com.musiqa.player.data.repository.ListeningRecord>,
+        playEvents: List<PlayEventRecord>,
+        artistScores: Map<String, ArtistAffinity>
+    ): List<OnlineShelf> = coroutineScope {
+        val seedQueries = RecommendationEngine.buildDynamicSeedQueries(
+            languages = languages,
+            genres = genres,
+            artists = artists,
+            playEvents = playEvents,
+            artistScores = artistScores
+        ).take(2)
+
+        val contrastQuery = RecommendationEngine.pickContrastQuery(languages)
+
+        val topLikedTrack = playEvents.firstOrNull { it.liked || (it.source == "searched" && it.completionRatio >= 0.1f) }
+            ?: recentRecords.firstOrNull()?.let {
+                PlayEventRecord(it.trackId, it.title, it.artist, it.album, it.artworkUrl, it.timestamp, 1f, true, false, "home", "")
+            }
+
+        val relatedJob = async {
+            if (topLikedTrack != null) {
+                val related = fetchWatchNextRaw(topLikedTrack.trackId)
+                    .filter { it.id != topLikedTrack.trackId }
+                    .distinctBy { it.id }
+                    .take(12)
+                if (related.isNotEmpty()) {
+                    OnlineShelf(
+                        id = "similar-to-track",
+                        title = "Similar to ${topLikedTrack.title}",
+                        subtitle = "Based on ${topLikedTrack.artist}",
+                        tracks = related,
+                        shelfType = ShelfType.TRACK_LIST
+                    )
+                } else null
+            } else null
+        }
+
+        val seedJobs = seedQueries.mapIndexed { idx, q ->
+            async {
+                val tracks = search(q).take(12)
+                if (tracks.isNotEmpty()) {
+                    val cleanTitle = q.replace(" top songs", "", ignoreCase = true)
+                        .replace(" songs", "", ignoreCase = true)
+                        .replace(" hits", "", ignoreCase = true)
+                        .trim()
+                        .replaceFirstChar { it.uppercase() }
+                    OnlineShelf(
+                        id = "dynamic-seed-$idx",
+                        title = if (idx == 0 && artistScores.isNotEmpty()) "Picked for you · $cleanTitle" else cleanTitle,
+                        subtitle = if (idx == 0) "Self-learning mix from your plays" else "Matched to your preferences",
+                        tracks = tracks,
+                        shelfType = ShelfType.TRACK_LIST
+                    )
+                } else null
+            }
+        }
+
+        val songMixerJob = async {
+            val mixerPools = mutableListOf(
+                "top pop hits global",
+                "bollywood romantic hits",
+                "indie acoustic chill",
+                "sufi qawwali classics",
+                "upbeat party dance hits",
+                "90s nostalgia hits",
+                "classic rock hits",
+                "lo-fi chill beats"
+            )
+            // Blend in user's preferred artists, learned top artists, and genres
+            artists.shuffled().take(1).forEach { a -> mixerPools.add(0, "$a songs") }
+            artistScores.values
+                .sortedByDescending { it.likes * 3f - it.skips * 2f }
+                .take(2)
+                .forEach { aff -> mixerPools.add(0, "${aff.displayName} top songs") }
+            genres.shuffled().take(2).forEach { g -> mixerPools.add(0, "$g hits") }
+
+            val selectedQueries = mixerPools.distinct().shuffled().take(4)
+            val buckets = selectedQueries.map { q -> async { search(q).shuffled().take(5) } }.awaitAll()
+
+            // Round-robin interleave across user taste + internet + all categories so every slide is a true multi-genre mix
+            val mixed = mutableListOf<OnlineTrack>()
+            val seen = mutableSetOf<String>()
+            val maxLen = buckets.maxOfOrNull { it.size } ?: 0
+            for (i in 0 until maxLen) {
+                for (bucket in buckets) {
+                    val t = bucket.getOrNull(i)
+                    if (t != null && seen.add(t.id)) {
+                        mixed.add(t)
+                    }
+                }
+            }
+            if (mixed.size >= 4) {
+                OnlineShelf(
+                    id = "song-mixer",
+                    title = "Song mixes",
+                    subtitle = "Mixed from your taste, global hits & all genres",
+                    tracks = mixed.take(16),
+                    shelfType = ShelfType.TRACK_LIST
+                )
+            } else null
+        }
+
+        listOfNotNull(songMixerJob.await(), relatedJob.await()) + seedJobs.awaitAll().filterNotNull()
     }
 
 
@@ -373,23 +504,174 @@ object YouTubeMusicEngine {
         return result
     }
 
-    suspend fun fetchCategoryTracks(category: String): List<OnlineTrack> = withContext(Dispatchers.IO) {
-        val query = when (category.lowercase().trim()) {
-            "trending" -> "top 100 hits trending songs india"
-            "bollywood" -> "latest top bollywood hindi songs superhits"
-            "nostalgia" -> "90s 2000s classic evergreen bollywood nostalgia songs"
-            "sad" -> "best hindi sad songs broken heart emotional arijit atif kk"
-            "sufi & qawwali", "qawwali", "sufi" -> "best sufi qawwali nusrat fateh ali khan rahat sabri"
-            "romance" -> "romantic hindi love songs acoustic bollywood"
-            "party" -> "bollywood party dance club hits"
-            "energise", "energize" -> "high energy workout music pump up hits"
-            "workout" -> "gym workout motivation beats"
-            "focus" -> "lofi study beats ambient focus"
-            "relax" -> "chill acoustic calm relaxation vibes"
-            "sleep" -> "deep sleep peaceful piano ambient"
-            else -> "$category songs"
+    private var categoryRotationTick = 0
+
+    suspend fun fetchCategoryTracks(
+        category: String,
+        languages: Set<String> = setOf("English", "Hindi"),
+        playEvents: List<PlayEventRecord> = emptyList(),
+        artistScores: Map<String, ArtistAffinity> = emptyMap()
+    ): List<OnlineTrack> = withContext(Dispatchers.IO) {
+        val queryPool = when (category.lowercase().trim()) {
+            "trending" -> listOf(
+                "top trending songs india global",
+                "viral music hits this week",
+                "chartbusters pop bollywood",
+                "new trending songs 2025 2026"
+            )
+            "bollywood" -> listOf(
+                "latest bollywood hindi superhits",
+                "top bollywood romantic dance hits",
+                "new hindi movie songs",
+                "evergreen bollywood hits"
+            )
+            "nostalgia" -> listOf(
+                "90s bollywood nostalgia classics",
+                "2000s hindi evergreen hits",
+                "90s pop rock nostalgia",
+                "retro classic hits india global"
+            )
+            "sad" -> listOf(
+                "hindi sad emotional songs",
+                "heartbreak acoustic ballads",
+                "soulful melancholic songs",
+                "sad lofi chill songs"
+            )
+            "sufi & qawwali", "qawwali", "sufi" -> listOf(
+                "nusrat fateh ali khan qawwali classics",
+                "coke studio sufi songs",
+                "rahat fateh ali khan sufi hits",
+                "best sufi ghazal qawwali"
+            )
+            "romance" -> listOf(
+                "romantic hindi love songs",
+                "acoustic love ballads english",
+                "soulful romantic duets",
+                "best love songs playlist"
+            )
+            "party" -> listOf(
+                "bollywood party dance club hits",
+                "punjabi party bangers",
+                "edm dance club hits",
+                "weekend party mix"
+            )
+            "energise", "energize" -> listOf(
+                "high energy pump up hits",
+                "upbeat pop rock anthems",
+                "energetic punjabi workout",
+                "feel good upbeat hits"
+            )
+            "workout" -> listOf(
+                "gym workout motivation beats",
+                "high tempo hip hop workout",
+                "edm workout running mix",
+                "punjabi gym hits"
+            )
+            "focus" -> listOf(
+                "lofi study beats ambient focus",
+                "instrumental piano focus music",
+                "deep work chillhop beats",
+                "ambient concentration music"
+            )
+            "relax" -> listOf(
+                "chill acoustic calm vibes",
+                "indian lofi chill",
+                "soft indie acoustic",
+                "evening relax music"
+            )
+            "sleep" -> listOf(
+                "deep sleep peaceful piano ambient",
+                "calm night rain sleep music",
+                "soft instrumental lullaby",
+                "meditation sleep ambient"
+            )
+            else -> listOf("$category top songs", "$category hits", "best $category music")
         }
-        search(query)
+
+        // Rotate queries by 10-minute time interval + per-request tick so sequence & songs stay fresh
+        val timeBucket = (System.currentTimeMillis() / (10 * 60 * 1000L)).toInt()
+        val tick = synchronized(this) { categoryRotationTick++ }
+        val idx1 = (timeBucket + tick) % queryPool.size
+        val idx2 = (idx1 + 1) % queryPool.size
+
+        val (batch1, batch2) = coroutineScope {
+            val j1 = async { search(queryPool[idx1]) }
+            val j2 = async { search(queryPool[idx2]) }
+            j1.await() to j2.await()
+        }
+
+        val skippedIds = playEvents.filter { it.skipped }.map { it.trackId }.toSet()
+        val recentIds = playEvents.take(25).map { it.trackId }.toSet()
+
+        val combined = (batch1 + batch2)
+            .distinctBy { it.id }
+            .filterNot { it.id in skippedIds }
+
+        // Keep fresh unplayed tracks near the top, shuffle within tiers for variety across intervals
+        val fresh = combined.filterNot { it.id in recentIds }.shuffled()
+        val older = combined.filter { it.id in recentIds }.shuffled()
+
+        (fresh + older).take(20)
+    }
+
+    suspend fun fetchExploreCollection(id: String): OnlineCollection? = withContext(Dispatchers.IO) {
+        when (id) {
+            "explore-releases" -> {
+                val (indiaNew, globalNew) = coroutineScope {
+                    val j1 = async { search("new hindi punjabi music releases 2026").take(10) }
+                    val j2 = async { search("new english pop music releases 2026").take(10) }
+                    j1.await() to j2.await()
+                }
+                val tracks = (indiaNew + globalNew).distinctBy { it.id }.shuffled()
+                OnlineCollection(
+                    id = id,
+                    title = "New Releases",
+                    subtitle = "Fresh drops across India & Global",
+                    description = "Latest singles, film soundtracks, and new album releases.",
+                    type = OnlineCollectionType.PLAYLIST,
+                    artworkSeed = 10,
+                    artworkUrl = tracks.firstOrNull()?.artworkUrl,
+                    tracks = tracks
+                )
+            }
+            "explore-podcasts" -> {
+                val (p1, p2) = coroutineScope {
+                    val j1 = async { search("music podcast artist interview").take(8) }
+                    val j2 = async { search("coke studio behind the scenes music talk").take(8) }
+                    j1.await() to j2.await()
+                }
+                val tracks = (p1 + p2).distinctBy { it.id }
+                OnlineCollection(
+                    id = id,
+                    title = "Podcasts & Music Talks",
+                    subtitle = "Artist interviews & music stories",
+                    description = "Conversations, studio sessions, and deep dives with musicians.",
+                    type = OnlineCollectionType.PLAYLIST,
+                    artworkSeed = 13,
+                    artworkUrl = tracks.firstOrNull()?.artworkUrl,
+                    tracks = tracks
+                )
+            }
+            "explore-charts" -> {
+                val (c1, c2) = coroutineScope {
+                    val j1 = async { search("top 50 india chart hits").take(10) }
+                    val j2 = async { search("global top 50 music hits").take(10) }
+                    j1.await() to j2.await()
+                }
+                val tracks = (c1 + c2).distinctBy { it.id }
+                OnlineCollection(
+                    id = id,
+                    title = "Top Charts",
+                    subtitle = "Trending in India & Global",
+                    description = "Most played tracks across charts right now.",
+                    type = OnlineCollectionType.PLAYLIST,
+                    artworkSeed = 11,
+                    artworkUrl = tracks.firstOrNull()?.artworkUrl,
+                    tracks = tracks
+                )
+            }
+            else -> null
+        }
     }
 
     private data class CachedStream(
@@ -745,7 +1027,7 @@ object YouTubeMusicEngine {
                         header.contains("Speed dial", ignoreCase = true) -> ShelfType.SPEED_DIAL_GRID
                         header.contains("Quick picks", ignoreCase = true) ||
                         header.contains("Trending", ignoreCase = true) ||
-                        header.contains("Mixed for you", ignoreCase = true) -> ShelfType.TRACK_LIST
+                        header.contains("mix", ignoreCase = true) -> ShelfType.TRACK_LIST
                         header.contains("Live", ignoreCase = true) ||
                         header.contains("Performance", ignoreCase = true) ||
                         header.contains("Video", ignoreCase = true) ||
@@ -823,8 +1105,8 @@ object YouTubeMusicEngine {
                 artworkUrl = it.artworkUrl
             )
         }
-        val combined = (recentTracks + candidateTracks + curated).distinctBy { it.id }
-        val tracks = if (combined.size >= 18) combined.take(27) else curated
+        val combined = (recentTracks + candidateTracks).distinctBy { it.id }
+        val tracks = if (combined.size >= 9) combined.take(27) else (combined + curated).distinctBy { it.id }.take(27)
         return OnlineShelf(
             id = "speed-dial",
             title = "Speed dial",
@@ -1293,10 +1575,18 @@ object YouTubeMusicEngine {
             .split(Regex("\\s+"))
             .filter { it.length >= 2 && it !in setOf("by", "song", "songs", "full", "original", "video", "audio", "the", "in", "of") }
 
-        val isLongFormQuery = lowerQuery.contains("nusrat") || lowerQuery.contains("qawwali") ||
-                lowerQuery.contains("ghazal") || lowerQuery.contains("mehdi hassan") ||
-                lowerQuery.contains("ghulam ali") || lowerQuery.contains("abida parveen") ||
-                lowerQuery.contains("sabri")
+        val longFormArtists = listOf(
+            "nusrat", "qawwali", "ghazal", "mehdi hassan", "ghulam ali",
+            "abida parveen", "sabri", "rahat fateh", "aziz mian", "fareed ayaz",
+            "javed bashir", "wadali"
+        )
+        val hasLongFormTrack = tracks.any { t ->
+            val a = t.artist.lowercase()
+            val title = t.title.lowercase()
+            val durSec = parseDurationToMs(t.durationLabel) / 1000
+            longFormArtists.any { a.contains(it) || title.contains(it) } || durSec >= 720
+        }
+        val isLongFormQuery = longFormArtists.any { lowerQuery.contains(it) } || hasLongFormTrack
 
         val officialLabels = listOf(
             "nusrat fateh ali khan", "t-series", "saregama", "sony music", "tips", "yrf",
@@ -1306,7 +1596,8 @@ object YouTubeMusicEngine {
 
         val fanClipKeywords = listOf(
             "creations", "status", "shorts", "reel", "edits", "whatsapp", "bgm", "30 sec", "30sec",
-            "lyrics status", "lofi edit", "slowed", "reverb", "bass boosted", "dj remix"
+            "lyrics status", "lofi edit", "slowed", "reverb", "bass boosted", "dj remix",
+            "clip", "short version", "cut", "ringtone", "teaser", "cover", "karaoke"
         )
 
         val scored = tracks.map { track ->
@@ -1343,15 +1634,17 @@ object YouTubeMusicEngine {
 
             if (isLongFormQuery) {
                 if (durSec >= 600) { // >= 10 minutes: original full recording!
-                    score += 45
-                } else if (durSec >= 300) { // >= 5 minutes
-                    score += 20
-                } else if (durSec < 240) { // < 4 minutes: truncated clip
-                    score -= 30
+                    score += 65
+                } else if (durSec >= 360) { // >= 6 minutes
+                    score += 25
+                } else if (durSec in 1..270) { // < 4.5 minutes: truncated clip
+                    score -= 35
                 }
             } else {
-                if (durSec in 150..450) {
+                if (durSec in 150..480) {
                     score += 15
+                } else if (durSec >= 480) {
+                    score += 10
                 }
             }
 
@@ -1490,20 +1783,20 @@ object YouTubeMusicEngine {
         return resultQueue.distinctBy { it.id }.take(35)
     }
 
-    suspend fun generateRadioQueue(seedTrack: OnlineTrack): List<OnlineTrack> = withContext(Dispatchers.IO) {
-        val liveQueue = try {
+    private fun fetchWatchNextRaw(videoId: String): List<OnlineTrack> {
+        return try {
             val url = "https://music.youtube.com/youtubei/v1/next"
             val bodyJson = JSONObject().apply {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
                         put("clientName", "WEB_REMIX")
                         put("clientVersion", "1.20240101.01.00")
-                        put("hl", "en-GB")
-                        put("gl", "IN")
+                        put("hl", "en")
+                        put("gl", "US")
                     })
                 })
-                put("videoId", seedTrack.id)
-                put("playlistId", "RDAMVM${seedTrack.id}")
+                put("videoId", videoId)
+                put("playlistId", "RDAMVM$videoId")
                 put("isAudioOnly", true)
             }
 
@@ -1519,11 +1812,37 @@ object YouTubeMusicEngine {
             val responseString = response.body?.string() ?: ""
             parseWatchNextRadio(responseString)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to fetch live radio for ${seedTrack.id}: ${e.message}", e)
+            Log.e(TAG, "Failed to fetch watch next for $videoId: ${e.message}", e)
             emptyList()
         }
+    }
 
-        composeVariedRadioQueue(seedTrack, liveQueue)
+    suspend fun generateRadioQueue(
+        seedTrack: OnlineTrack,
+        languages: Set<String> = setOf("English", "Hindi"),
+        preferredArtists: Set<String> = emptySet(),
+        playEvents: List<PlayEventRecord> = emptyList(),
+        artistScores: Map<String, ArtistAffinity> = emptyMap()
+    ): List<OnlineTrack> = withContext(Dispatchers.IO) {
+        val (liveQueue, contrastTracks) = coroutineScope {
+            val radioJob = async { fetchWatchNextRaw(seedTrack.id) }
+            val contrastJob = async {
+                val contrastQuery = RecommendationEngine.pickContrastQuery(languages)
+                search(contrastQuery).take(8)
+            }
+            radioJob.await() to contrastJob.await()
+        }
+
+        val validPrimary = liveQueue.filter { parseDurationToMs(it.durationLabel) >= 60_000L }
+        val ranked = RecommendationEngine.rankAndDiversifyQueue(
+            seedTrack = seedTrack,
+            primaryCandidates = validPrimary,
+            contrastCandidates = contrastTracks,
+            artistScores = artistScores,
+            preferredArtists = preferredArtists,
+            recentEvents = playEvents
+        )
+        if (ranked.size >= 5) ranked else composeVariedRadioQueue(seedTrack, liveQueue)
     }
 
     suspend fun buildHeroRadio(
@@ -1556,9 +1875,10 @@ object YouTubeMusicEngine {
             )
             moodSubtitle = "${last.artist} & $timeMood Radio"
         } else if (preferredArtists.isNotEmpty()) {
-            val artistName = preferredArtists.first()
+            val artistName = preferredArtists.random()
             val candidate = candidateShelves.flatMap { it.tracks }
                 .find { it.artist.contains(artistName, ignoreCase = true) }
+                ?: candidateShelves.flatMap { it.tracks }.firstOrNull()
                 ?: OnlineTrack(
                     id = "BddP6PYo2gs",
                     title = "Kesariya",

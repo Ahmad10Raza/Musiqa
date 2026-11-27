@@ -1,0 +1,40 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Top slanted beam -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M47,30 L76.5,21.5 L76.5,27.5 L47,36 Z" />
+    <!-- Second parallel slanted beam (sixteenth note) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M47,39.5 L76.5,31 L76.5,35.5 L47,44 Z" />
+    <!-- Left stem -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M47,30 L50.5,30 L50.5,72 L47,72 Z" />
+    <!-- Right stem -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M73,22.5 L76.5,21.5 L76.5,64 L73,64 Z" />
+    <!-- Left tilted oval notehead -->
+    <group
+        android:translateX="41.5"
+        android:translateY="72"
+        android:rotation="-20">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M-9.5,0 A9.5,6.2 0 1,0 9.5,0 A9.5,6.2 0 1,0 -9.5,0 Z" />
+    </group>
+    <!-- Right tilted oval notehead -->
+    <group
+        android:translateX="67.5"
+        android:translateY="64"
+        android:rotation="-20">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M-9.5,0 A9.5,6.2 0 1,0 9.5,0 A9.5,6.2 0 1,0 -9.5,0 Z" />
+    </group>
+</vector>

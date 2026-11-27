@@ -24,10 +24,11 @@ enum class PlaybackMode {
 }
 
 enum class PlayerCoverStyle(val displayName: String, val description: String) {
-    VINYL("Vinyl Turntable", "Classic rotating vinyl disc with grooves"),
-    PULSE_MEDITATION("Meditation Pulse", "Calming breathing glow and ambient waves"),
-    BARS_SPECTRUM("Spectrum Audio Bars", "Dancing audio equalizer bars"),
-    FULL_ART("Album Cover Art", "Modern rounded full-bleed artwork")
+    VINYL("Crimson Neon Vinyl", "Rotating vinyl disc with Splash-style pulsing glow"),
+    PULSE_MEDITATION("Crimson Sonar Waves", "Expanding concentric neon wave ripples around cover"),
+    BARS_SPECTRUM("Radial Audio Halo", "360° animated spectrum bars dancing around artwork"),
+    ORBIT_WAVES("Orbital Neon Arcs", "Counter-rotating glowing arcs framing your cover"),
+    FULL_ART("Album Sleeve & Vinyl", "Modern rounded album sleeve with peeking vinyl")
 }
 
 enum class QuickFilter {
@@ -220,6 +221,16 @@ object PlayerController {
         val savedRepeat = repo.getRepeatMode()
         _repeatMode.value = savedRepeat
 
+        // Pre-restore last online song/queue immediately if user was on Online Music tab
+        restoreOnlineStateFromPrefs(repo)
+        if (repo.getLastBottomTab() == "ONLINE" && _currentOnlineSong.value != null && _currentSong.value == null) {
+            _playbackMode.value = PlaybackMode.ONLINE
+            _currentSong.value = _currentOnlineSong.value
+            _queue.value = _onlineQueue.value
+            _currentIndex.value = _currentOnlineIndex.value
+            _duration.value = _currentOnlineSong.value?.duration ?: 210000L
+        }
+
         val existing = exoPlayer
         if (existing != null && existing.applicationLooper.thread.isAlive) {
             return existing
@@ -314,6 +325,31 @@ object PlayerController {
         return player
     }
 
+    private fun restoreOnlineStateFromPrefs(repo: UserPreferencesRepository) {
+        val lastOnline = repo.getLastOnlineTrack() ?: return
+        val onlineQueue = repo.getLastOnlineQueue().ifEmpty { listOf(lastOnline) }
+        val restoredSongQueue = onlineQueue.map { item ->
+            Song(
+                id = (item.id.hashCode().toLong() and 0x7FFFFFFF),
+                title = item.title,
+                artist = item.artist,
+                album = item.album,
+                albumId = -1L,
+                duration = 210000L,
+                uri = android.net.Uri.parse("online://${item.id}"),
+                path = "online://${item.id}",
+                size = 0L,
+                dateAdded = System.currentTimeMillis(),
+                bitrate = "256 kbps",
+                remoteArtworkUrl = item.artworkUrl
+            )
+        }
+        val targetSong = restoredSongQueue.find { it.path == "online://${lastOnline.id}" } ?: restoredSongQueue.first()
+        _onlineQueue.value = restoredSongQueue
+        _currentOnlineSong.value = targetSong
+        _currentOnlineIndex.value = restoredSongQueue.indexOf(targetSong).coerceAtLeast(0)
+    }
+
     fun restoreLastPlayedState(allSongs: List<Song>) {
         val repo = prefsRepo ?: return
 
@@ -333,32 +369,19 @@ object PlayerController {
         }
 
         // 2. Pre-initialize online track & queue if available
-        val lastOnline = repo.getLastOnlineTrack()
-        if (lastOnline != null) {
-            val onlineQueue = repo.getLastOnlineQueue().ifEmpty { listOf(lastOnline) }
-            val restoredSongQueue = onlineQueue.map { item ->
-                Song(
-                    id = (item.id.hashCode().toLong() and 0x7FFFFFFF),
-                    title = item.title,
-                    artist = item.artist,
-                    album = item.album,
-                    albumId = -1L,
-                    duration = 210000L,
-                    uri = android.net.Uri.parse("online://${item.id}"),
-                    path = "online://${item.id}",
-                    size = 0L,
-                    dateAdded = System.currentTimeMillis(),
-                    bitrate = "256 kbps",
-                    remoteArtworkUrl = item.artworkUrl
-                )
-            }
-            val targetSong = restoredSongQueue.find { it.path == "online://${lastOnline.id}" } ?: restoredSongQueue.first()
-            _onlineQueue.value = restoredSongQueue
-            _currentOnlineSong.value = targetSong
-            _currentOnlineIndex.value = restoredSongQueue.indexOf(targetSong).coerceAtLeast(0)
-        }
+        restoreOnlineStateFromPrefs(repo)
+        val preferOnline = repo.getLastBottomTab() == "ONLINE" && _currentOnlineSong.value != null
 
-        if (allSongs.isEmpty()) return
+        if (allSongs.isEmpty()) {
+            if (preferOnline) {
+                _playbackMode.value = PlaybackMode.ONLINE
+                _currentSong.value = _currentOnlineSong.value
+                _queue.value = _onlineQueue.value
+                _currentIndex.value = _currentOnlineIndex.value
+                _duration.value = _currentOnlineSong.value?.duration ?: 210000L
+            }
+            return
+        }
 
         // 3. Restore Last Played Local Track, Position, and Queue
         val lastSongId = repo.getLastSongId()
@@ -376,10 +399,22 @@ object PlayerController {
         val targetIndex = restoredQueue.indexOfFirst { it.id == targetSong.id }.coerceAtLeast(0)
         val lastPos = repo.getLastPositionMs().coerceAtLeast(0L)
 
-        _playbackMode.value = PlaybackMode.LOCAL
         _localQueue.value = restoredQueue
         _currentLocalSong.value = targetSong
         _currentLocalIndex.value = targetIndex
+
+        if (preferOnline) {
+            // Keep MiniPlayerBar & active queue on the last played Online track
+            _playbackMode.value = PlaybackMode.ONLINE
+            _currentSong.value = _currentOnlineSong.value
+            _queue.value = _onlineQueue.value
+            _currentIndex.value = _currentOnlineIndex.value
+            _currentPosition.value = 0L
+            _duration.value = _currentOnlineSong.value?.duration ?: 210000L
+            return
+        }
+
+        _playbackMode.value = PlaybackMode.LOCAL
         _queue.value = restoredQueue
         _currentIndex.value = targetIndex
         _currentSong.value = targetSong

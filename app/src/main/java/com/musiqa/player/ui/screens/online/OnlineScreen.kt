@@ -29,10 +29,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.NorthWest
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Tune
@@ -70,8 +76,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -124,7 +132,7 @@ fun OnlineScreen(
             initialLanguages = state.preferredLanguages,
             initialGenres = state.preferredGenres,
             initialArtists = state.preferredArtists,
-            isFirstRun = false,
+            isFirstRun = !state.hasCompletedOnboarding,
             onSave = { languages, genres, artists ->
                 viewModel.updatePreferences(languages, genres, artists)
             },
@@ -159,7 +167,9 @@ fun OnlineScreen(
                 onSearchImmediate = viewModel::executeSearchImmediately,
                 onSuggestionSelected = viewModel::selectSuggestionQuery,
                 onAppendQuery = viewModel::appendQuery,
-                onPlay = viewModel::play
+                onRemoveHistory = viewModel::removeSearchHistoryItem,
+                onClearHistory = viewModel::clearSearchHistory,
+                onPlay = { track, list -> viewModel.play(track, list, source = "search") }
             )
             is OnlineDestination.Collection -> OnlineCollectionDetail(
                 collection = state.selectedCollection,
@@ -172,6 +182,23 @@ fun OnlineScreen(
                 modifier = Modifier.padding(padding),
                 onBack = viewModel::back,
                 onPlay = viewModel::play
+            )
+            OnlineDestination.Charts -> OnlineChartsInsightsScreen(
+                insights = state.chartInsights,
+                modifier = Modifier.padding(padding),
+                onBack = viewModel::back,
+                onSearch = viewModel::openSearch,
+                onPlay = { track, list -> viewModel.play(track, list, source = "charts") }
+            )
+            OnlineDestination.MoodsAndGenres -> OnlineMoodsGenresScreen(
+                categories = state.categories + listOf("Pop", "Rock", "Hip-Hop & Rap", "Jazz & Blues"),
+                modifier = Modifier.padding(padding),
+                onBack = viewModel::back,
+                onSearch = viewModel::openSearch,
+                onSelectMood = { mood ->
+                    viewModel.openHome()
+                    viewModel.selectCategory(mood)
+                }
             )
         }
     }
@@ -848,8 +875,15 @@ private fun ExploreGridShelf(
                                         .background(CrimsonPrimary.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
+                                    val exploreIcon = when (col.id) {
+                                        "explore-releases" -> Icons.Default.NewReleases
+                                        "explore-charts" -> Icons.Default.BarChart
+                                        "explore-moods" -> Icons.Default.Mood
+                                        "explore-podcasts" -> Icons.Default.Podcasts
+                                        else -> Icons.Default.Explore
+                                    }
                                     Icon(
-                                        Icons.Default.Explore,
+                                        exploreIcon,
                                         contentDescription = null,
                                         tint = CrimsonPrimary,
                                         modifier = Modifier.size(18.dp)
@@ -914,13 +948,20 @@ private fun OnlineSearch(
     onSearchImmediate: (String) -> Unit,
     onSuggestionSelected: (String) -> Unit,
     onAppendQuery: (String) -> Unit,
+    onRemoveHistory: (String) -> Unit,
+    onClearHistory: () -> Unit,
     onPlay: (OnlineTrack, List<OnlineTrack>) -> Unit
 ) {
-    var searchText by rememberSaveable { mutableStateOf(state.query) }
+    var searchFieldValue by remember {
+        mutableStateOf(TextFieldValue(text = state.query, selection = TextRange(state.query.length)))
+    }
 
     LaunchedEffect(state.query) {
-        if (searchText != state.query) {
-            searchText = state.query
+        if (searchFieldValue.text != state.query) {
+            searchFieldValue = TextFieldValue(
+                text = state.query,
+                selection = TextRange(state.query.length)
+            )
         }
     }
 
@@ -939,19 +980,19 @@ private fun OnlineSearch(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             OutlinedTextField(
-                value = searchText,
-                onValueChange = {
-                    searchText = it
-                    onQueryChanged(it)
+                value = searchFieldValue,
+                onValueChange = { newValue ->
+                    searchFieldValue = newValue
+                    onQueryChanged(newValue.text)
                 },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 placeholder = { Text("Search online music") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
-                trailingIcon = if (searchText.isNotBlank()) {
+                trailingIcon = if (searchFieldValue.text.isNotBlank()) {
                     {
                         IconButton(onClick = {
-                            searchText = ""
+                            searchFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
                             onQueryChanged("")
                         }) {
                             Icon(Icons.Default.Close, "Clear search")
@@ -960,7 +1001,7 @@ private fun OnlineSearch(
                 } else null,
                 shape = RoundedCornerShape(24.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSearchImmediate(searchText) }),
+                keyboardActions = KeyboardActions(onSearch = { onSearchImmediate(searchFieldValue.text) }),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = DarkSurface,
                     unfocusedContainerColor = DarkSurface,
@@ -985,23 +1026,70 @@ private fun OnlineSearch(
         }
 
         when {
-            state.query.isBlank() -> SearchEmpty("Search the catalogue", "Find tracks, artists, albums, and playlists.")
+            state.query.isBlank() -> {
+                if (state.searchHistory.isNotEmpty()) {
+                    LazyColumn(contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Recent searches", color = Color(0xFFAAAAAA), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                TextButton(onClick = onClearHistory) {
+                                    Text("Clear", color = CrimsonPrimary, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        items(state.searchHistory.take(5)) { historyQuery ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSuggestionSelected(historyQuery) }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.History, contentDescription = null, tint = Color(0xFF888888), modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(14.dp))
+                                Text(
+                                    text = historyQuery,
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(onClick = { onAppendQuery("$historyQuery ") }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.NorthWest, contentDescription = "Insert query", tint = Color(0xFF888888), modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(onClick = { onRemoveHistory(historyQuery) }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Remove history", tint = Color(0xFF666666), modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    SearchEmpty("Search the catalogue", "Find tracks, artists, albums, and playlists.")
+                }
+            }
 
             // Committed search: show full tracks ranked result list
             state.isCommittedSearch -> {
                 when {
-                    state.isSearching || state.searchStatus == SearchStatus.SEARCHING -> {
+                    state.isSearching || state.searchStatus == SearchStatus.SEARCHING || state.searchStatus == SearchStatus.IDLE -> {
                         LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)) {
                             items(8) {
                                 TrackRowSkeleton()
                             }
                         }
                     }
-                    state.searchStatus == SearchStatus.EMPTY || state.searchResults.isEmpty() -> {
-                        SearchEmpty("No matches found", "Try another title, artist, or genre.")
-                    }
                     state.searchStatus == SearchStatus.ERROR -> {
                         SearchEmpty("Search failed", "Check your internet connection and try again.")
+                    }
+                    state.searchStatus == SearchStatus.EMPTY && state.searchResults.isEmpty() -> {
+                        SearchEmpty("No matches found", "Try another title, artist, or genre.")
                     }
                     else -> LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                         item {
@@ -1021,13 +1109,36 @@ private fun OnlineSearch(
 
             // Typing / Autocomplete: show suggestions & interleaved direct playable song cards
             else -> {
-                if (state.searchSuggestions.isEmpty() && (state.isSearching || state.searchStatus == SearchStatus.SEARCHING)) {
-                    LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)) {
-                        items(6) {
-                            SuggestionRowSkeleton()
+                if (state.isSearching || state.searchStatus == SearchStatus.SEARCHING || state.searchStatus == SearchStatus.IDLE) {
+                    if (state.searchSuggestions.isNotEmpty()) {
+                        LazyColumn(contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)) {
+                            itemsIndexed(state.searchSuggestions) { _, item ->
+                                when (item) {
+                                    is SearchSuggestionItem.Query -> {
+                                        SuggestionQueryRow(
+                                            query = item.query,
+                                            onClick = { onSuggestionSelected(item.query) },
+                                            onAppend = { onAppendQuery("${item.query} ") }
+                                        )
+                                    }
+                                    is SearchSuggestionItem.DirectTrack -> {
+                                        SuggestionTrackRow(
+                                            track = item.track,
+                                            subtitle = item.subtitle,
+                                            onClick = { onPlay(item.track, emptyList()) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)) {
+                            items(6) {
+                                SuggestionRowSkeleton()
+                            }
                         }
                     }
-                } else if (state.searchSuggestions.isEmpty()) {
+                } else if (state.searchStatus == SearchStatus.EMPTY && state.searchSuggestions.isEmpty()) {
                     SearchEmpty("No suggestions found", "Try typing another title, artist, or lyric.")
                 } else {
                     LazyColumn(contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)) {
@@ -1037,7 +1148,7 @@ private fun OnlineSearch(
                                     SuggestionQueryRow(
                                         query = item.query,
                                         onClick = { onSuggestionSelected(item.query) },
-                                        onAppend = { onAppendQuery(item.query) }
+                                        onAppend = { onAppendQuery("${item.query} ") }
                                     )
                                 }
                                 is SearchSuggestionItem.DirectTrack -> {
@@ -1212,16 +1323,21 @@ private fun OnlineCollectionDetail(
                 Spacer(Modifier.height(6.dp))
                 Text(collection.description, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextButton(onClick = { onPlay(collection.tracks.first(), collection.tracks) }) {
-                        Icon(Icons.Default.PlayArrow, null, tint = CrimsonPrimary)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Play", color = Color.White)
-                    }
-                    TextButton(onClick = { onPlay(collection.tracks.shuffled().first(), collection.tracks.shuffled()) }) {
-                        Icon(Icons.Default.Shuffle, null, tint = CrimsonPrimary)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Shuffle", color = Color.White)
+                if (collection.tracks.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TextButton(onClick = { onPlay(collection.tracks.first(), collection.tracks) }) {
+                            Icon(Icons.Default.PlayArrow, null, tint = CrimsonPrimary)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Play", color = Color.White)
+                        }
+                        TextButton(onClick = {
+                            val shuffled = collection.tracks.shuffled()
+                            onPlay(shuffled.first(), shuffled)
+                        }) {
+                            Icon(Icons.Default.Shuffle, null, tint = CrimsonPrimary)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Shuffle", color = Color.White)
+                        }
                     }
                 }
             }
@@ -1229,6 +1345,302 @@ private fun OnlineCollectionDetail(
         }
         itemsIndexed(collection.tracks, key = { _, item -> item.id }) { index, track ->
             TrackRow(track = track, number = index + 1, onClick = { onPlay(track, collection.tracks) })
+        }
+    }
+}
+
+@Composable
+private fun OnlineChartsInsightsScreen(
+    insights: com.musiqa.player.online.UserChartInsights,
+    modifier: Modifier,
+    onBack: () -> Unit,
+    onSearch: () -> Unit,
+    onPlay: (OnlineTrack, List<OnlineTrack>) -> Unit
+) {
+    BackHandler(enabled = true) { onBack() }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().background(DarkBackground),
+        contentPadding = PaddingValues(bottom = 80.dp)
+    ) {
+        item {
+            OnlineTopBar(title = "Charts & Mood Trends", onSearch = onSearch, onBack = onBack)
+        }
+
+        // User Profile Summary Card
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = DarkSurfaceElevated
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("Your Listener Profile", color = CrimsonPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(insights.profileSummary, color = Color.White, fontSize = 13.sp, lineHeight = 18.sp)
+                    if (insights.totalPlays > 0) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "${insights.uniqueArtistsCount} unique artists • ${insights.searchPlaysCount} searched plays",
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4 KPI Summary Cards (2x2 grid)
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    ChartKpiCard(
+                        label = "Total Plays",
+                        value = "${insights.totalPlays}",
+                        modifier = Modifier.weight(1f)
+                    )
+                    ChartKpiCard(
+                        label = "Completion Likes",
+                        value = "${insights.likedRatePercent}%",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    ChartKpiCard(
+                        label = "Top Artist",
+                        value = insights.topArtist,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ChartKpiCard(
+                        label = "Dominant Mood",
+                        value = insights.dominantMood,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        // Mood & Genre Trend Bars + Mood History Timeline
+        if (insights.moodBreakdown.isNotEmpty()) {
+            val totalMoodPlays = insights.moodBreakdown.sumOf { it.second }.coerceAtLeast(1)
+            val maxMood = insights.moodBreakdown.maxOf { it.second }.coerceAtLeast(1)
+            item {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text("Your Mood & Genre Trends", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    insights.moodBreakdown.forEach { (mood, count) ->
+                        val fraction = (count.toFloat() / maxMood.toFloat()).coerceIn(0.08f, 1f)
+                        val sharePct = ((count * 100f) / totalMoodPlays).toInt()
+                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(mood, color = Color(0xFFDDDDDD), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text("$count plays ($sharePct%)", color = Color.Gray, fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(DarkSurface)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(fraction)
+                                        .height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(CrimsonPrimary)
+                                )
+                            }
+                        }
+                    }
+
+                    if (insights.moodHistoryTimeline.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        Text("Recent Mood History", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(6.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            itemsIndexed(insights.moodHistoryTimeline) { idx, moodLabel ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (idx == 0) CrimsonPrimary.copy(alpha = 0.22f) else DarkSurface
+                                ) {
+                                    Text(
+                                        text = if (idx == 0) "Now: $moodLabel" else moodLabel,
+                                        color = if (idx == 0) Color.White else Color(0xFFBBBBBB),
+                                        fontSize = 11.sp,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Top Artists Affinity
+        if (insights.topArtists.isNotEmpty()) {
+            item {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("Artist Affinity Profile", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(insights.topArtists) { aff ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = DarkSurfaceElevated
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                    Text(aff.displayName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text(
+                                        "${aff.likes.toInt()} likes • ${aff.skips.toInt()} skips",
+                                        color = Color.Gray,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Complete Listening History
+        if (insights.recentHistory.isNotEmpty()) {
+            item {
+                Text(
+                    "Your Listening History (${insights.recentHistory.size})",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+            val historyTracks = insights.recentHistory.map { ev ->
+                val badge = when {
+                    ev.liked -> "Liked (${(ev.completionRatio * 100).toInt()}%)"
+                    ev.skipped -> "Skipped (${(ev.completionRatio * 100).toInt()}%)"
+                    ev.completionRatio <= 0.01f -> "Played"
+                    else -> "${(ev.completionRatio * 100).toInt()}% played"
+                }
+                OnlineTrack(
+                    id = ev.trackId,
+                    title = ev.title,
+                    artist = ev.artist,
+                    album = ev.album,
+                    durationLabel = "",
+                    artworkSeed = ev.trackId.hashCode(),
+                    artworkUrl = ev.artworkUrl,
+                    playsCount = badge
+                )
+            }
+            itemsIndexed(historyTracks) { index, track ->
+                TrackRow(track = track, number = index + 1, onClick = { onPlay(track, historyTracks) })
+            }
+        } else {
+            item {
+                SearchEmpty("No listening history yet", "Play a few songs and your mood trends & history will appear here.")
+            }
+        }
+
+        // Live Top Charts (India & Global)
+        item {
+            Text(
+                "India & Global Top Charts",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+            )
+        }
+        if (insights.isLoadingCharts) {
+            items(5) { TrackRowSkeleton() }
+        } else {
+            itemsIndexed(insights.chartTracks, key = { _, item -> "chart_${item.id}" }) { index, track ->
+                TrackRow(track = track, number = index + 1, onClick = { onPlay(track, insights.chartTracks) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChartKpiCard(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = DarkSurfaceElevated
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(label, color = Color.Gray, fontSize = 11.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(value, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun OnlineMoodsGenresScreen(
+    categories: List<String>,
+    modifier: Modifier,
+    onBack: () -> Unit,
+    onSearch: () -> Unit,
+    onSelectMood: (String) -> Unit
+) {
+    BackHandler(enabled = true) { onBack() }
+
+    val uniqueMoods = remember(categories) { categories.distinct() }
+    LazyColumn(
+        modifier = modifier.fillMaxSize().background(DarkBackground),
+        contentPadding = PaddingValues(bottom = 80.dp)
+    ) {
+        item {
+            OnlineTopBar(title = "Moods & Genres", onSearch = onSearch, onBack = onBack)
+        }
+        val rows = uniqueMoods.chunked(2)
+        items(rows) { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                for (mood in row) {
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(64.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onSelectMood(mood) },
+                        shape = RoundedCornerShape(14.dp),
+                        color = DarkSurfaceElevated
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Text(
+                                text = mood,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                if (row.size == 1) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
